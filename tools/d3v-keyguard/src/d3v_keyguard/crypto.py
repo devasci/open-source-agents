@@ -15,7 +15,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.argon2 import Argon2id
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
-FORMAT = "d3v-keyguard/1"
+FORMAT = "d3v-keyguard/2"
 
 
 @dataclass(frozen=True)
@@ -36,6 +36,22 @@ class KdfParams:
 
 
 DEFAULT_KDF = KdfParams()
+_KDF_LIMITS = {"iterations": (1, 64), "lanes": (1, 64), "memory_cost": (8, 4 * 1024 * 1024)}
+
+
+def parse_kdf(kdf: object) -> tuple[bytes, KdfParams]:
+    """Strictly validate a stored KDF block. Raises ValueError on anything unexpected."""
+    if not isinstance(kdf, dict) or set(kdf) != {"alg", "salt", "params"} or kdf["alg"] != "argon2id":
+        raise ValueError("bad kdf block")
+    salt = b64d(kdf["salt"])
+    params = kdf["params"]
+    if len(salt) != 16 or not isinstance(params, dict) or set(params) != set(_KDF_LIMITS):
+        raise ValueError("bad kdf block")
+    for key, (lo, hi) in _KDF_LIMITS.items():
+        v = params[key]
+        if type(v) is not int or not lo <= v <= hi:
+            raise ValueError("bad kdf block")
+    return salt, KdfParams(**params)
 
 
 def b64e(data: bytes) -> str:
@@ -71,8 +87,12 @@ def mac(key: bytes, data: bytes) -> str:
     return b64e(hmac.new(key, data, hashlib.sha256).digest())
 
 
-def mac_ok(key: bytes, data: bytes, tag: str) -> bool:
-    return hmac.compare_digest(mac(key, data), tag)
+def mac_ok(key: bytes, data: bytes, tag: object) -> bool:
+    return isinstance(tag, str) and tag.isascii() and hmac.compare_digest(mac(key, data), tag)
+
+
+def digest(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()[:32]
 
 
 def aead_encrypt(key: bytes, plaintext: bytes, aad: bytes) -> dict:

@@ -17,8 +17,16 @@ class VaultLocked(KeyguardError):
     pass
 
 
+class VaultIOError(KeyguardError):
+    """The vault file or OS keyring could not be read/written (busy, permissions, ...)."""
+
+
 class WrongPin(KeyguardError):
     pass
+
+
+class WeakPin(KeyguardError, ValueError):
+    """The chosen passphrase is too weak to resist offline guessing."""
 
 
 class LockedOut(KeyguardError):
@@ -31,6 +39,10 @@ class TamperDetected(KeyguardError):
 
 class SecretNotFound(KeyguardError):
     pass
+
+
+class SecretExists(KeyguardError):
+    """An active secret with this name exists; pass overwrite=True / --force to replace it."""
 
 
 class SecretPending(KeyguardError):
@@ -46,4 +58,8 @@ class InsecureBackend(KeyguardError):
 
 
 class PromptCancelled(KeyguardError):
-    pass
+    """The user cancelled (or did not answer) a secure prompt."""
+
+
+class PromptUnavailable(PromptCancelled):
+    """No secure prompt could be shown (no GUI / helper failed). Callers may fall back."""

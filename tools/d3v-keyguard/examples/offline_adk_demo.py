@@ -26,7 +26,7 @@ from d3v_keyguard import Policy, Vault
 from d3v_keyguard.adk import KeyguardADK
 
 API_KEY = "sk-demo-4f9a1c7e2b8d6035"  # fake value used only by this demo
-PIN = "demo-pin-2468"
+PIN = "demo-pin-2468"  # the vault passphrase
 SEEN_REQUESTS: list[str] = []
 RECEIVED: dict = {}
 
@@ -41,6 +41,9 @@ class InMemoryKeyring:
     def set_password(self, s, u, p):
         self._d[(s, u)] = p
 
+    def delete_password(self, s, u):
+        self._d.pop((s, u), None)
+
 
 class ScriptedPrompt:
     """Stands in for the secure OS dialog where the human types the PIN."""
@@ -53,11 +56,18 @@ class ScriptedPrompt:
         print(f"  [secure dialog] {title} -> user clicks Yes")
         return True
 
+    def review(self, title, message, items):
+        print(f"  [secure dialog] {title}")
+        for item in items:
+            print(f"    {item['label']}  -> user picks Approve")
+        return {item["name"]: "approve" for item in items}
+
 
 SCRIPT = [
     ("login", {"username": "alice"}),
     ("list_secrets", {}),
-    ("call_api", {"url": "https://api.example.com/v1/me", "authorization": "Bearer keyguard://demo_api"}),
+    ("call_api", {"path": "/v1/me", "authorization": "Bearer keyguard://demo_api"}),
+    ("lock_vault", {}),
 ]
 
 
@@ -73,7 +83,8 @@ class ScriptedModel(BaseLlm):
             name, args = SCRIPT[turn]
             part = types.Part(function_call=types.FunctionCall(name=name, args=args))
         else:
-            part = types.Part(text="Done: logged in, and called the API with your demo_api key (by handle).")
+            part = types.Part(text="Done: logged in, called the API with your demo_api key (by handle), "
+                                    "and locked the vault.")
         yield LlmResponse(content=types.Content(role="model", parts=[part]))
 
 
@@ -83,10 +94,11 @@ def login(username: str) -> dict:
     return {"status": "success", "user": username, "session_token": RECEIVED["session_token"]}
 
 
-def call_api(url: str, authorization: str) -> dict:
-    """Call an HTTP API; pass authorization as 'Bearer keyguard://<name>'."""
+def call_api(path: str, authorization: str) -> str:
+    """Call the demo API (host fixed in code). Pass authorization as 'Bearer keyguard://<name>'."""
     RECEIVED["authorization"] = authorization
-    return {"status": "success", "url": url, "echoed_header": authorization}
+    # Returns a plain string (common for ADK tools) that echoes the header, to show it is scrubbed.
+    return f"200 OK from https://api.example.com{path}; sent Authorization: {authorization}"
 
 
 async def main() -> None:
@@ -94,14 +106,13 @@ async def main() -> None:
     vault = Vault(tmp / "vault.json", keyring_backend=InMemoryKeyring())
     vault.create(PIN)
     vault.lock()
-    print("1) Developer stores demo_api while the vault is LOCKED (no PIN):",
+    print("1) Developer stores demo_api while the vault is LOCKED (no passphrase):",
           vault.put("demo_api", API_KEY, {"description": "demo API key"}))
 
     kg = KeyguardADK(vault=vault, policy=Policy({"call_api": ["demo_*"]}),
                      capture={"login": {"session_token": "demo_session"}}, prompt=ScriptedPrompt())
     agent = Agent(name="keyguard_demo", model=ScriptedModel(), instruction="Use secrets only by handle.",
-                  tools=[login, call_api, *kg.tools], before_tool_callback=kg.before_tool_callback,
-                  after_tool_callback=kg.after_tool_callback, before_model_callback=kg.before_model_callback)
+                  tools=[login, call_api, *kg.tools], **kg.callbacks())
     runner = InMemoryRunner(agent=agent, app_name="demo")
     session = await runner.session_service.create_session(app_name="demo", user_id="u")
 
@@ -122,6 +133,7 @@ async def main() -> None:
     print("3) Verification:")
     print("  call_api received the real key        :", RECEIVED["authorization"] == f"Bearer {API_KEY}")
     print("  login token captured into the vault   :", [s["name"] for s in vault.list()])
+    print("  vault locked by the lock_vault tool   :", not vault.is_unlocked())
     print("  plaintext in any model request        :", any(s in r for r in SEEN_REQUESTS for s in secrets))
     print("  plaintext in persisted session history:", any(s in history for s in secrets))
     print("  plaintext in vault file on disk       :", any(s in vault.path.read_text() for s in secrets))
